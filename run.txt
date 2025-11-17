@@ -1,0 +1,6 @@
+python demo/image_demo.py tests/data/coco/000000000785.jpg td-hm_hrnet-w48_8xb32-210e_coco-256x192.py td-hm_hrnet-w48_8xb32-210e_coco-256x192-0e67c616_20220913.pth --out-file vis_results.jpg --draw-heatmap
+
+python jiaoben/batch_pose_estimation.py G:/gait_dataset/lml/nm-1/0-1 configs/body_2d_keypoint/topdown_heatmap/coco/td-hm_hrnet-w48_8xb32-210e_coco-256x192.py td-hm_hrnet-w48_8xb32-210e_coco-256x192-0e67c616_20220913.pth --out-csv results.csv --out-imgs ./output_images  
+
+
+mim download mmpose --config td-hm_ViTPose-huge-simple_8xb64-210e_coco-256x192  --dest .
