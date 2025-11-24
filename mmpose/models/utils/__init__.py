@@ -8,10 +8,19 @@ from .reparam_layers import RepVGGBlock
 from .rtmcc_block import RTMCCBlock, rope
 from .transformer import (DetrTransformerEncoder, GAUEncoder, PatchEmbed,
                           SinePositionalEncoding, nchw_to_nlc, nlc_to_nchw)
+from .layer_scale import LayerScale
+from .norm import build_norm_layer
+from .helpers import to_2tuple
+from .swiglu_ffn import SwiGLUFFN, SwiGLUFFNFused
+from .embed import resize_pos_embed
+from .attention import MultiheadAttention
+from .diffattention import MultiHeadDifferentialAttention
 
 __all__ = [
     'PatchEmbed', 'nchw_to_nlc', 'nlc_to_nchw', 'pvt_convert', 'RTMCCBlock',
     'rope', 'check_and_update_config', 'filter_scores_and_topk', 'CSPLayer',
     'FrozenBatchNorm2d', 'inverse_sigmoid', 'GAUEncoder',
-    'SinePositionalEncoding', 'RepVGGBlock', 'DetrTransformerEncoder'
+    'SinePositionalEncoding', 'RepVGGBlock', 'DetrTransformerEncoder',
+    'LayerScale', 'build_norm_layer','to_2tuple','SwiGLUFFN', 'SwiGLUFFNFused',
+    'resize_pos_embed','MultiheadAttention','MultiHeadDifferentialAttention'
 ]

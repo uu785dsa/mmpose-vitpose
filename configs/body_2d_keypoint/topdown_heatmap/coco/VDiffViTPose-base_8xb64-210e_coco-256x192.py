@@ -66,7 +66,7 @@ model = dict(
         patch_cfg=dict(padding=2),
         patch_size=16,
         qkv_bias=True,
-        type='VisionTransformer',
+        type='DiffVisionTransformer',
         with_cls_token=False),
     data_preprocessor=dict(
         bgr_to_rgb=True,
@@ -167,7 +167,7 @@ test_evaluator = dict(
     type='CocoMetric')
 train_cfg = dict(by_epoch=True, max_epochs=100, val_interval=10)
 train_dataloader = dict(
-    batch_size=64,
+    batch_size=32,
     dataset=dict(
         ann_file='coco-pose/annotations/person_keypoints_train2017.json',
         data_mode='topdown',
@@ -229,7 +229,7 @@ train_pipeline = [
 ]
 val_cfg = dict()
 val_dataloader = dict(
-    batch_size=64,
+    batch_size=32,
     dataset=dict(
         ann_file='coco-pose/annotations/person_keypoints_val2017.json',
         data_mode='topdown',

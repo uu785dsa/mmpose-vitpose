@@ -4,3 +4,7 @@ python jiaoben/batch_pose_estimation.py G:/gait_dataset/lml/nm-1/0-1 configs/bod
 
 
 mim download mmpose --config td-hm_ViTPose-huge-simple_8xb64-210e_coco-256x192  --dest .
+
+CUDA_VISIBLE_DEVICES=-1 python tools/train.py ${CONFIG_FILE}
+
+python tools/train.py G:\vitpose\mmpose\configs\body_2d_keypoint\topdown_heatmap\coco\ViTPose-base_8xb64-210e_coco-256x192.py
