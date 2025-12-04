@@ -68,6 +68,11 @@ class VisualContrastAttention(nn.Module):
         self.norm_stage1 = RMSNorm(self.head_dim)
         self.norm_stage2 = RMSNorm(self.head_dim)
 
+        self.pool_conv = nn.Sequential(
+            nn.Conv2d(self.head_dim, self.head_dim, kernel_size=3, padding=1, groups=self.head_dim, bias=False),
+            nn.GELU()
+        )
+
     def forward(self, x: torch.Tensor, H: int, W: int) -> torch.Tensor:
         B, N, C = x.shape
         has_cls = (N == H * W + 1)
@@ -92,16 +97,13 @@ class VisualContrastAttention(nn.Module):
         q_2d_flat = q_2d.permute(0, 1, 4, 2, 3).contiguous()  # (B, M, d, H, W)
         q_2d_flat = q_2d_flat.view(B * self.num_heads, self.head_dim, H, W)
 
-        # ✅ Replace with Avg + Max Pool fusion
-        q_avg = F.adaptive_avg_pool2d(
-            q_2d_flat,
+        # ✅ Replace with Learnable Pooling: DWConv + GELU + AdaptiveAvgPool
+        # Add a small depth-wise conv to enrich spatial context before pooling
+        q_enhanced = self.pool_conv(q_2d_flat)  # (B*M, d, H, W)
+        q_pooled_flat = F.adaptive_avg_pool2d(
+            q_enhanced,
             (self.contrast_pool_size, self.contrast_pool_size)
-        )
-        q_max = F.adaptive_max_pool2d(
-            q_2d_flat,
-            (self.contrast_pool_size, self.contrast_pool_size)
-        )
-        q_pooled_flat = (q_avg + q_max) * 0.5  # (B*M, d, h, w)
+        )  # (B*M, d, h, w)
 
         q_pooled = q_pooled_flat.view(B, self.num_heads, self.head_dim, self.contrast_pool_size, self.contrast_pool_size)
         q_pooled = q_pooled.permute(0, 1, 3, 4, 2)  # (B, M, h, w, d)
