@@ -92,23 +92,25 @@ class VisualContrastAttention(nn.Module):
         q_2d_flat = q_2d.permute(0, 1, 4, 2, 3).contiguous()  # (B, M, d, H, W)
         q_2d_flat = q_2d_flat.view(B * self.num_heads, self.head_dim, H, W)
 
-        # ✅ Use adaptive pooling → robust to any H, W
-        q_pooled_flat = F.adaptive_avg_pool2d(
+        # ✅ Replace with Avg + Max Pool fusion
+        q_avg = F.adaptive_avg_pool2d(
             q_2d_flat,
             (self.contrast_pool_size, self.contrast_pool_size)
-        )  # (B*M, d, h, w)
+        )
+        q_max = F.adaptive_max_pool2d(
+            q_2d_flat,
+            (self.contrast_pool_size, self.contrast_pool_size)
+        )
+        q_pooled_flat = (q_avg + q_max) * 0.5  # (B*M, d, h, w)
 
         q_pooled = q_pooled_flat.view(B, self.num_heads, self.head_dim, self.contrast_pool_size, self.contrast_pool_size)
         q_pooled = q_pooled.permute(0, 1, 3, 4, 2)  # (B, M, h, w, d)
         t_base = q_pooled.flatten(2, 3)  # (B, M, n, d)
 
-        # === ✅ Dynamic e+ / e- generation ===
-        # Global feature per head: mean over spatial
+        # === Dynamic e+ / e- generation (unchanged) ===
         global_q = q.mean(dim=2)  # (B, M, d)
         e_pos = self.e_proj_pos(global_q).unsqueeze(2)  # (B, M, 1, d)
         e_neg = self.e_proj_neg(global_q).unsqueeze(2)  # (B, M, 1, d)
-
-        # Broadcast to (B, M, n, d)
         t_pos = t_base + e_pos
         t_neg = t_base + e_neg
 
