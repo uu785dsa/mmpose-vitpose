@@ -23,8 +23,7 @@ class RMSNorm(nn.Module):
 # -------------------------
 class VisualContrastAttention(nn.Module):
     """
-    Visual–Contrast Attention (VCA) as a drop-in replacement for MHSA.
-    Paper: Linear Differential Vision Transformer (NeurIPS 2025)
+    Visual–Contrast Attention (VCA) with *dynamic* e+/e- embeddings.
     """
     def __init__(
         self,
@@ -34,7 +33,7 @@ class VisualContrastAttention(nn.Module):
         qk_scale: Optional[float] = None,
         attn_drop: float = 0.0,
         proj_drop: float = 0.0,
-        contrast_pool_size: int = 8,  # h = w = contrast_pool_size, n = h*w
+        contrast_pool_size: int = 8,
         init_lambda1: float = 0.5,
         init_lambda2: float = 0.5,
     ):
@@ -50,17 +49,17 @@ class VisualContrastAttention(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
-        # === Visual-Contrast Token Generation ===
+        # === Dynamic e+/e- projection ===
         self.contrast_pool_size = contrast_pool_size
         self.n_contrast = contrast_pool_size * contrast_pool_size
 
-        # Dual learnable positional embeddings (positive / negative)
-        self.pos_embed_pos = nn.Parameter(torch.zeros(1, self.n_contrast, self.head_dim))
-        self.pos_embed_neg = nn.Parameter(torch.zeros(1, self.n_contrast, self.head_dim))
-        nn.init.normal_(self.pos_embed_pos, std=0.02)
-        nn.init.normal_(self.pos_embed_neg, std=0.02)
+        # Instead of static embeddings, use dynamic projections from global feature
+        self.e_proj_pos = nn.Linear(self.head_dim, self.head_dim, bias=False)
+        self.e_proj_neg = nn.Linear(self.head_dim, self.head_dim, bias=False)
+        nn.init.normal_(self.e_proj_pos.weight, std=0.02)
+        nn.init.normal_(self.e_proj_neg.weight, std=0.02)
 
-        # Learnable lambda scalars (simplified: scalar instead of vector inner product)
+        # Learnable lambda scalars (keep your simplified version)
         self.lambda1 = nn.Parameter(torch.tensor(init_lambda1))
         self.lambda2 = nn.Parameter(torch.tensor(init_lambda2))
         self.lambda1_init = init_lambda1
@@ -70,20 +69,12 @@ class VisualContrastAttention(nn.Module):
         self.norm_stage2 = RMSNorm(self.head_dim)
 
     def forward(self, x: torch.Tensor, H: int, W: int) -> torch.Tensor:
-        """
-        Args:
-            x: (B, N, C) — N = H * W (if no cls token) or H*W+1 (with cls token)
-            H, W: spatial resolution of patch grid (excluding cls token if present)
-        Returns:
-            (B, N, C)
-        """
         B, N, C = x.shape
         has_cls = (N == H * W + 1)
 
-        # Separate cls token if exists
         if has_cls:
-            cls_token = x[:, :1, :]  # (B, 1, C)
-            x_patch = x[:, 1:, :]    # (B, H*W, C)
+            cls_token = x[:, :1, :]
+            x_patch = x[:, 1:, :]
             N_patch = H * W
         else:
             x_patch = x
@@ -91,61 +82,65 @@ class VisualContrastAttention(nn.Module):
 
         assert N_patch == H * W, f"Input spatial tokens {N_patch} != H*W={H*W}"
 
-        # QKV projection and reshape
+        # QKV
         qkv = self.qkv(x_patch).reshape(B, N_patch, 3, self.num_heads, self.head_dim)
-        qkv = qkv.permute(2, 0, 3, 1, 4)  # (3, B, num_heads, N_patch, head_dim)
-        q, k, v = qkv[0], qkv[1], qkv[2]  # each: (B, num_heads, N_patch, head_dim)
+        qkv = qkv.permute(2, 0, 3, 1, 4)
+        q, k, v = qkv[0], qkv[1], qkv[2]  # (B, M, N, d)
 
         # === Stage I: Global Contrast ===
-        # Reshape q to 2D: (B, num_heads, H, W, head_dim)
         q_2d = q.view(B, self.num_heads, H, W, self.head_dim)
-        # AvgPool each head independently
-        # Pooling stride = kernel_size to get (h, w) = (contrast_pool_size, contrast_pool_size)
-        pool_stride = (H // self.contrast_pool_size, W // self.contrast_pool_size)
-        # Use adaptive pooling to avoid dimension mismatch
-        q_pooled = F.adaptive_avg_pool3d(
-            q_2d.permute(0, 1, 4, 2, 3),  # (B, num_heads, head_dim, H, W)
-            (self.head_dim, self.contrast_pool_size, self.contrast_pool_size)
-        ).permute(0, 1, 3, 4, 2)  # (B, num_heads, h, w, head_dim)
-        t_base = q_pooled.flatten(2, 3)  # (B, num_heads, n, head_dim)
+        q_2d_flat = q_2d.permute(0, 1, 4, 2, 3).contiguous()  # (B, M, d, H, W)
+        q_2d_flat = q_2d_flat.view(B * self.num_heads, self.head_dim, H, W)
 
-        # Add dual positional embeddings (broadcast over batch and heads)
-        t_pos = t_base + self.pos_embed_pos.unsqueeze(0)  # (B, num_heads, n, d)
-        t_neg = t_base + self.pos_embed_neg.unsqueeze(0)
+        # ✅ Use adaptive pooling → robust to any H, W
+        q_pooled_flat = F.adaptive_avg_pool2d(
+            q_2d_flat,
+            (self.contrast_pool_size, self.contrast_pool_size)
+        )  # (B*M, d, h, w)
 
-        # Positive stream attention: (B, num_heads, n, N) @ (B, num_heads, N, d) → (B, num_heads, n, d)
-        attn_pos = (t_pos @ k.transpose(-2, -1)) * self.scale  # (B, num_heads, n, N_patch)
+        q_pooled = q_pooled_flat.view(B, self.num_heads, self.head_dim, self.contrast_pool_size, self.contrast_pool_size)
+        q_pooled = q_pooled.permute(0, 1, 3, 4, 2)  # (B, M, h, w, d)
+        t_base = q_pooled.flatten(2, 3)  # (B, M, n, d)
+
+        # === ✅ Dynamic e+ / e- generation ===
+        # Global feature per head: mean over spatial
+        global_q = q.mean(dim=2)  # (B, M, d)
+        e_pos = self.e_proj_pos(global_q).unsqueeze(2)  # (B, M, 1, d)
+        e_neg = self.e_proj_neg(global_q).unsqueeze(2)  # (B, M, 1, d)
+
+        # Broadcast to (B, M, n, d)
+        t_pos = t_base + e_pos
+        t_neg = t_base + e_neg
+
+        # === Stage I: Global Contrast ===
+        attn_pos = (t_pos @ k.transpose(-2, -1)) * self.scale
         attn_pos = attn_pos.softmax(dim=-1)
-        v_hat_pos = attn_pos @ v  # (B, num_heads, n, head_dim)
+        v_hat_pos = attn_pos @ v
 
-        # Negative stream
         attn_neg = (t_neg @ k.transpose(-2, -1)) * self.scale
         attn_neg = attn_neg.softmax(dim=-1)
         v_hat_neg = attn_neg @ v
 
-        # Differential + RMSNorm
         v_contrast = v_hat_pos - self.lambda1 * v_hat_neg
-        v_contrast = self.norm_stage1(v_contrast)  # (B, num_heads, n, head_dim)
+        v_contrast = self.norm_stage1(v_contrast)
         v_contrast = (1 - self.lambda1_init) * v_contrast
 
         # === Stage II: Patch-wise Differential Attention ===
-        # Compute attention from original q to contrast tokens
-        attn1 = (q @ t_pos.transpose(-2, -1)) * self.scale  # (B, num_heads, N_patch, n)
+        attn1 = (q @ t_pos.transpose(-2, -1)) * self.scale
         attn1 = attn1.softmax(dim=-1)
         attn2 = (q @ t_neg.transpose(-2, -1)) * self.scale
         attn2 = attn2.softmax(dim=-1)
 
-        attn_out = attn1 - self.lambda2 * attn2  # (B, num_heads, N_patch, n)
-        out_patch = attn_out @ v_contrast  # (B, num_heads, N_patch, head_dim)
+        attn_out = attn1 - self.lambda2 * attn2
+        out_patch = attn_out @ v_contrast
         out_patch = self.norm_stage2(out_patch)
         out_patch = (1 - self.lambda2_init) * out_patch
 
-        # Reshape back to (B, N_patch, C)
+        # Reshape and output
         out_patch = out_patch.transpose(1, 2).reshape(B, N_patch, C)
         out_patch = self.proj(out_patch)
         out_patch = self.proj_drop(out_patch)
 
-        # Re-attach cls token if needed
         if has_cls:
             out = torch.cat([cls_token, out_patch], dim=1)
         else:
